@@ -1,0 +1,7 @@
+Boundary extraction summary
+Outer boundary length [m]: 506.162
+Inner boundary length [m]: 487.779
+Centerline length [m]: 494.076
+Outer boundary points: 2000
+Inner boundary points: 2000
+Centerline points: 2000

@@ -1,0 +1,6 @@
+Min-curvature raceline (from boundary CSVs)
+Raceline points  : 4788
+Raceline length  : 478.687 m
+Lap time est.    : 78.19 s
+Speed range      : 2.66 – 8.00 m/s
+Max |curvature|  : 0.5630 1/m
