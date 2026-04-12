@@ -7,15 +7,15 @@ from scipy.spatial import cKDTree
 # Fixed folder paths
 # =========================
 BASE_DIR = "/Users/shure_duan/VScode/f1tenth/raceline_generation/raceline_output"
-OUT_DIR = "/Users/shure_duan/VScode/f1tenth/neural_input/local_input/local_result"
+OUT_DIR = "/Users/shure_duan/VScode/f1tenth/neural_input/look_ahead_context_input/look_ahead_result"
 
 RACELINE_CSV = os.path.join(BASE_DIR, "raceline.csv")
 CENTERLINE_CSV = os.path.join(BASE_DIR, "centerline.csv")
 LEFT_BOUNDARY_CSV = os.path.join(BASE_DIR, "left_boundary.csv")
 RIGHT_BOUNDARY_CSV = os.path.join(BASE_DIR, "right_boundary.csv")
 
-OUTPUT_FEATURE_CSV = os.path.join(OUT_DIR, "x_local_features.csv")
-OUTPUT_FEATURE_NPY = os.path.join(OUT_DIR, "x_local.npy")
+OUTPUT_FEATURE_CSV = os.path.join(OUT_DIR, "x_context_features_clean.csv")
+OUTPUT_FEATURE_NPY = os.path.join(OUT_DIR, "x_context.npy")
 
 
 # =========================
@@ -74,40 +74,18 @@ def remove_consecutive_duplicate_points(df, xcol, ycol, scol=None, eps=1e-12):
 
 
 def interp_closed_scalar(s_old, v_old, s_new):
-    """
-    Periodic interpolation for scalar values on a closed loop.
-    """
-    L = s_old[-1]
-    s_ext = np.concatenate([s_old, [L + (s_old[1] - s_old[0])]])
+    L = float(s_old[-1])
+    ds0 = float(s_old[1] - s_old[0])
+    s_ext = np.concatenate([s_old, [L + ds0]])
     v_ext = np.concatenate([v_old, [v_old[0]]])
     return np.interp(s_new, s_ext, v_ext)
 
 
-def interp_closed_xy(s_old, x_old, y_old, n_segments):
-    """
-    Resample closed curve by arc length using existing s_m.
-    """
-    L = s_old[-1]
-    ds = L / n_segments
-    s_new = np.linspace(0.0, L, n_segments, endpoint=False)
-
-    x_new = interp_closed_scalar(s_old, x_old, s_new)
-    y_new = interp_closed_scalar(s_old, y_old, s_new)
-    return s_new, x_new, y_new, ds, L
-
-
 def circular_gradient(values, ds):
-    """
-    Gradient on a closed loop (uniform spacing).
-    """
     return (np.roll(values, -1) - np.roll(values, 1)) / (2.0 * ds)
 
 
 def circular_gradient_nonuniform(values, s, L):
-    """
-    Central-difference gradient on a closed loop with non-uniform spacing.
-    L: total arc length (period).
-    """
     s_next = np.roll(s, -1).copy()
     s_next[-1] = s[0] + L
     s_prev = np.roll(s, 1).copy()
@@ -117,34 +95,7 @@ def circular_gradient_nonuniform(values, s, L):
     return (v_next - v_prev) / (s_next - s_prev)
 
 
-def adaptive_arc_sample(s_old, kappa_old, n_segments, kappa_weight=5.0):
-    """
-    Non-uniform arc-length resampling concentrated at high-curvature regions.
-
-    Builds a density function  d(s) = 1 + kappa_weight * |kappa(s)|  on a
-    fine grid, computes its CDF, then inverts it at n_segments uniform
-    targets so that high-curvature sections get proportionally more points.
-
-    Returns s_new [n_segments].
-    """
-    L = s_old[-1]
-    n_fine = 10 * n_segments
-    s_fine = np.linspace(0.0, L, n_fine, endpoint=False)
-    kappa_fine = np.interp(s_fine, s_old, kappa_old)
-
-    density = 1.0 + kappa_weight * np.abs(kappa_fine)
-
-    cum = np.concatenate([[0.0], np.cumsum(density)])
-    cum /= cum[-1]
-    s_fine_ext = np.concatenate([s_fine, [L]])
-
-    targets = np.linspace(0.0, 1.0, n_segments, endpoint=False)
-    s_new = np.interp(targets, cum, s_fine_ext)
-    return s_new
-
-
 def compute_heading(x, y):
-    # arctan2 is scale-invariant, so uniform ds=1 is fine for angle computation
     dx = circular_gradient(x, 1.0)
     dy = circular_gradient(y, 1.0)
     psi = np.arctan2(dy, dx)
@@ -152,20 +103,34 @@ def compute_heading(x, y):
     return psi
 
 
+def count_sign_switches(values, valid_mask):
+    signed_vals = values[valid_mask]
+    if len(signed_vals) <= 1:
+        return 0
+
+    signs = np.sign(signed_vals).astype(float)
+
+    for i in range(len(signs)):
+        if signs[i] == 0:
+            if i > 0 and signs[i - 1] != 0:
+                signs[i] = signs[i - 1]
+            else:
+                for j in range(i + 1, len(signs)):
+                    if signs[j] != 0:
+                        signs[i] = signs[j]
+                        break
+
+    switches = 0
+    for i in range(1, len(signs)):
+        if signs[i] != 0 and signs[i - 1] != 0 and signs[i] != signs[i - 1]:
+            switches += 1
+    return switches
+
+
 def project_boundaries_to_normals(x, y, psi, left_bd, right_bd, k_search=50):
     """
-    For each raceline point, find the boundary point that is most directly
-    perpendicular to the raceline (minimum tangential offset among candidates
-    on the correct side).
-
-    Returns
-    -------
-    left_proj     : [N, 2]  projected left boundary points
-    right_proj    : [N, 2]  projected right boundary points
-    d_left        : [N]     perpendicular distance to left boundary
-    d_right       : [N]     perpendicular distance to right boundary
-    left_bd_idx   : [N]     index into left_bd for each projected point
-    right_bd_idx  : [N]     index into right_bd for each projected point
+    Same segmentation logic as x_local:
+    for each centerline segment point, project left/right boundary along local normal.
     """
     left_tree = cKDTree(left_bd)
     right_tree = cKDTree(right_bd)
@@ -186,10 +151,9 @@ def project_boundaries_to_normals(x, y, psi, left_bd, right_bd, k_search=50):
         tx = np.cos(psi[i])
         ty = np.sin(psi[i])
 
-        # left normal: 90° CCW from tangent
+        # left normal
         nx, ny = -ty, tx
 
-        # --- Left boundary ---
         _, idxs = left_tree.query([px, py], k=k_l)
         cands = left_bd[idxs]
         dv = cands - np.array([px, py])
@@ -197,7 +161,7 @@ def project_boundaries_to_normals(x, y, psi, left_bd, right_bd, k_search=50):
         tang_comp = np.abs(dv[:, 0] * tx + dv[:, 1] * ty)
 
         on_side = norm_comp > 0
-        if on_side.sum() > 0:
+        if np.any(on_side):
             best = np.where(on_side)[0][np.argmin(tang_comp[on_side])]
         else:
             best = np.argmin(tang_comp)
@@ -206,7 +170,7 @@ def project_boundaries_to_normals(x, y, psi, left_bd, right_bd, k_search=50):
         d_left_out[i] = np.abs(norm_comp[best])
         left_bd_idx[i] = int(idxs[best])
 
-        # --- Right boundary: normal is 90° CW from tangent ---
+        # right normal
         rnx, rny = ty, -tx
         _, idxs = right_tree.query([px, py], k=k_r)
         cands = right_bd[idxs]
@@ -215,7 +179,7 @@ def project_boundaries_to_normals(x, y, psi, left_bd, right_bd, k_search=50):
         tang_comp = np.abs(dv[:, 0] * tx + dv[:, 1] * ty)
 
         on_side = norm_comp > 0
-        if on_side.sum() > 0:
+        if np.any(on_side):
             best = np.where(on_side)[0][np.argmin(tang_comp[on_side])]
         else:
             best = np.argmin(tang_comp)
@@ -227,40 +191,48 @@ def project_boundaries_to_normals(x, y, psi, left_bd, right_bd, k_search=50):
     return left_proj, right_proj, d_left_out, d_right_out, left_bd_idx, right_bd_idx
 
 
+def longest_consecutive_ones(arr):
+    best = 0
+    curr = 0
+    for v in arr:
+        if v == 1:
+            curr += 1
+            best = max(best, curr)
+        else:
+            curr = 0
+    return best
+
+
 # =========================
 # Main feature builder
 # =========================
-def compute_local_features(
+def compute_lookahead_context_features(
     raceline_csv,
     centerline_csv,
     left_boundary_csv,
     right_boundary_csv,
-    n_segments=300,
-    kappa_weight=5.0,
+    n_segments=600,
+    window_size=30,
+    alpha=0.5,
+    straight_quantile=0.25,
+    turn_quantile=0.60,
 ):
-    """
-    kappa_weight: controls adaptive density. Higher = more points at curves.
-                  Set to 0 for uniform spacing.
-    """
-    # load
     raceline_df = load_raceline_csv(raceline_csv)
     centerline_df = load_centerline_csv(centerline_csv)
     left_df = load_boundary_csv(left_boundary_csv)
     right_df = load_boundary_csv(right_boundary_csv)
 
-    # remove duplicate raceline points
     raceline_df = remove_consecutive_duplicate_points(
         raceline_df, xcol="x_m", ycol="y_m", scol="s_m"
+    )
+    centerline_df = remove_consecutive_duplicate_points(
+        centerline_df, xcol="x", ycol="y", scol="s"
     )
 
     x_old = raceline_df["x_m"].to_numpy(dtype=float)
     y_old = raceline_df["y_m"].to_numpy(dtype=float)
     s_old = raceline_df["s_m"].to_numpy(dtype=float)
-    kappa_old = raceline_df["kappa_radpm"].to_numpy(dtype=float)
 
-    centerline_df = remove_consecutive_duplicate_points(
-        centerline_df, xcol="x", ycol="y", scol="s"
-    )
     cx_old = centerline_df["x"].to_numpy(dtype=float)
     cy_old = centerline_df["y"].to_numpy(dtype=float)
     cs_old = centerline_df["s"].to_numpy(dtype=float)
@@ -268,113 +240,127 @@ def compute_local_features(
     left_bd = left_df[["x", "y"]].to_numpy(dtype=float)
     right_bd = right_df[["x", "y"]].to_numpy(dtype=float)
 
-    print("Loaded files successfully:")
-    print(f"  raceline: {raceline_df.shape}")
-    print(f"  centerline: {centerline_df.shape}")
-    print(f"  left boundary: {left_bd.shape}")
-    print(f"  right boundary: {right_bd.shape}")
-
-    total_len = float(s_old[-1])
     centerline_total_len = float(cs_old[-1])
 
-    # Adaptive arc-length resampling for raceline (UNCHANGED)
-    print(f"[INFO] Adaptive resampling (n={n_segments}, kappa_weight={kappa_weight}) ...")
-    s = adaptive_arc_sample(s_old, kappa_old, n_segments, kappa_weight=kappa_weight)
-
-    # raceline sampled features (UNCHANGED)
-    x = interp_closed_scalar(s_old, x_old, s)
-    y = interp_closed_scalar(s_old, y_old, s)
-
-    # centerline sampled independently for boundary-side projection (UNCHANGED)
+    # same uniform 600-segment centerline logic as x_local
     s_center = np.linspace(0.0, centerline_total_len, n_segments, endpoint=False)
     cx = interp_closed_scalar(cs_old, cx_old, s_center)
     cy = interp_closed_scalar(cs_old, cy_old, s_center)
 
-    # =========================================================
-    # ONLY CHANGE:
-    # kappa and delta_kappa now come from centerline
-    # =========================================================
     psi_center = compute_heading(cx, cy)
     ds_center = centerline_total_len / n_segments
-    kappa = circular_gradient(psi_center, ds_center)
-    delta_kappa = circular_gradient_nonuniform(kappa, s_center, centerline_total_len)
 
-    # heading and delta psi for raceline features (UNCHANGED)
-    psi = compute_heading(x, y)
-    delta_psi = circular_gradient_nonuniform(psi, s, total_len)
+    # signed curvature from centerline
+    kappa_signed = circular_gradient(psi_center, ds_center)
+    kappa_abs = np.abs(kappa_signed)
 
-    # Local arc-length per raceline segment (UNCHANGED)
-    s_next = np.roll(s, -1).copy()
-    s_next[-1] = s[0] + total_len
-    ds_arr = s_next - s
+    ds_arr = np.full(n_segments, ds_center, dtype=float)
 
-    # boundary projection from centerline (UNCHANGED)
-    print("Projecting boundaries along normals ...")
+    print("Projecting boundaries along centerline normals ...")
     left_proj, right_proj, d_left, d_right, left_bd_idx, right_bd_idx = \
         project_boundaries_to_normals(cx, cy, psi_center, left_bd, right_bd)
 
-    # local width (sum of perpendicular half-widths)
     width = d_left + d_right
 
-    # x_local = [kappa_i, delta_kappa_i, w_i, dL_i, dR_i, delta_psi_i]
-    x_local = np.column_stack([
-        kappa,
-        delta_kappa,
-        width,
-        d_left,
-        d_right,
-        delta_psi
+    # thresholds
+    kappa_straight = float(np.quantile(kappa_abs, straight_quantile))
+    kappa_turn = float(np.quantile(kappa_abs, turn_quantile))
+
+    mean_curvature = np.zeros(n_segments, dtype=float)
+    max_curvature = np.zeros(n_segments, dtype=float)
+    straight_indicator = np.zeros(n_segments, dtype=float)
+    compound_indicator = np.zeros(n_segments, dtype=float)
+    accumulated_heading_change = np.zeros(n_segments, dtype=float)
+
+    for i in range(n_segments):
+        idx = (i + np.arange(window_size)) % n_segments
+
+        k_win_abs = kappa_abs[idx]
+        k_win_signed = kappa_signed[idx]
+        ds_win = ds_arr[idx]
+
+        # 1) mean curvature
+        mean_curvature[i] = np.mean(k_win_abs)
+
+        # 2) max curvature
+        max_curvature[i] = np.max(k_win_abs)
+
+        # 3) straight indicator: longest consecutive straight run in full window (per spec)
+        b = (k_win_abs < kappa_straight).astype(int)
+        straight_indicator[i] = longest_consecutive_ones(b) / float(window_size)
+
+        # 4) compound / continuous corner indicator
+        turn_mask = k_win_abs > kappa_turn
+        n_turn = int(np.sum(turn_mask))
+        n_switch = count_sign_switches(k_win_signed, turn_mask)
+
+        turn_term = n_turn / float(window_size)
+        switch_term = (n_switch / float(max(n_turn - 1, 1))) if n_turn > 0 else 0.0
+        compound_indicator[i] = alpha * turn_term + (1.0 - alpha) * switch_term
+
+        # 5) accumulated heading change
+        accumulated_heading_change[i] = np.sum(k_win_abs * ds_win)
+
+    x_context = np.column_stack([
+        mean_curvature,
+        max_curvature,
+        straight_indicator,
+        compound_indicator,
+        accumulated_heading_change,
     ])
 
+    # Clean result table: only one row per segment with the final 5 context features
     df = pd.DataFrame({
         "segment_id": np.arange(n_segments),
-        "s": s,
-        "ds": ds_arr,
-        "x": x,
-        "y": y,
-        "kappa": kappa,
-        "delta_kappa": delta_kappa,
-        "width": width,
-        "d_left": d_left,
-        "d_right": d_right,
-        "delta_psi": delta_psi,
-        "psi": psi,
-        # Projected boundary points for perpendicular cross-section visualization
-        "left_proj_x": left_proj[:, 0],
-        "left_proj_y": left_proj[:, 1],
-        "right_proj_x": right_proj[:, 0],
-        "right_proj_y": right_proj[:, 1],
-        # Indices into the raw boundary arrays
-        "left_bd_idx": left_bd_idx,
-        "right_bd_idx": right_bd_idx,
+        "mean_curvature_30": mean_curvature,
+        "max_curvature_30": max_curvature,
+        "straight_indicator_30": straight_indicator,
+        "compound_indicator_30": compound_indicator,
+        "accum_heading_change_30": accumulated_heading_change,
     })
 
-    return x_local, df
+    meta = {
+        "kappa_straight": kappa_straight,
+        "kappa_turn": kappa_turn,
+        "window_size": window_size,
+        "alpha": alpha,
+        "straight_quantile": straight_quantile,
+        "turn_quantile": turn_quantile,
+    }
+
+    return x_context, df, meta
 
 
 # =========================
 # Run directly
 # =========================
 if __name__ == "__main__":
+    os.makedirs(OUT_DIR, exist_ok=True)
+
     for path in [RACELINE_CSV, CENTERLINE_CSV, LEFT_BOUNDARY_CSV, RIGHT_BOUNDARY_CSV]:
         if not os.path.exists(path):
             raise FileNotFoundError(f"File not found: {path}")
 
-    x_local, df_local = compute_local_features(
+    x_context, df_context, meta = compute_lookahead_context_features(
         raceline_csv=RACELINE_CSV,
         centerline_csv=CENTERLINE_CSV,
         left_boundary_csv=LEFT_BOUNDARY_CSV,
         right_boundary_csv=RIGHT_BOUNDARY_CSV,
         n_segments=600,
-        kappa_weight=5.0,
+        window_size=30,
+        alpha=0.5,
+        straight_quantile=0.25,
+        turn_quantile=0.60,
     )
 
     print("\nDone.")
-    print("x_local shape:", x_local.shape)
-    print(df_local.head())
+    print("x_context shape:", x_context.shape)
+    print(df_context.head())
+    print("\nSaved columns:", list(df_context.columns))
 
-    df_local.to_csv(OUTPUT_FEATURE_CSV, index=False)
-    np.save(OUTPUT_FEATURE_NPY, x_local)
+    df_context.to_csv(OUTPUT_FEATURE_CSV, index=False)
+    np.save(OUTPUT_FEATURE_NPY, x_context)
 
     print(f"\nSaved CSV to: {OUTPUT_FEATURE_CSV}")
     print(f"Saved NPY to: {OUTPUT_FEATURE_NPY}")
+    print(f"Thresholds used: {meta}")

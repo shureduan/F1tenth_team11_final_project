@@ -1,0 +1,64 @@
+{
+  "track_name": "Shanghai",
+  "local_feature_order": [
+    "kappa",
+    "delta_kappa",
+    "delta_psi",
+    "d_left",
+    "d_right",
+    "d_inner"
+  ],
+  "context_feature_order": [
+    "mean_curvature_30",
+    "max_curvature_30",
+    "straight_indicator_30",
+    "compound_indicator_30",
+    "accum_heading_change_30"
+  ],
+  "prior_feature_order": [
+    "layout_style_score",
+    "overtaking_friendliness_score",
+    "driver_challenge_score"
+  ],
+  "local_minmax": {
+    "min": [
+      -0.39454373717308044,
+      -0.21933984756469727,
+      -0.46946537494659424,
+      0.06507900357246399,
+      0.016421491280198097,
+      0.016421491280198097
+    ],
+    "max": [
+      0.5628654956817627,
+      0.20976249873638153,
+      1.0969876050949097,
+      1.7001670598983765,
+      1.6560622453689575,
+      1.4025936126708984
+    ]
+  },
+  "context_minmax": {
+    "min": [
+      0.0010588961886242032,
+      0.0027286626864224672,
+      0.0,
+      0.0,
+      0.026145681738853455
+    ],
+    "max": [
+      0.3144870698451996,
+      3.412112236022949,
+      0.5,
+      0.517241358757019,
+      7.765141487121582
+    ]
+  },
+  "prior_raw": [
+    3.0,
+    4.0,
+    4.0
+  ],
+  "prior_norm_rule": "x_prior_norm = (x_prior_raw - 1.0) / 4.0",
+  "label_file": "/Users/shure_duan/VScode/f1tenth/neural_network/label_data/Shanghai_label.csv"
+}
